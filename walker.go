@@ -6,7 +6,7 @@ import (
 )
 
 type UserFunc func(v reflect.Value, meta ObjMeta) error
-type Option func(*crawlSettings)
+type Option func(*walkSettings)
 type TagFilter func(tag reflect.StructTag) bool
 type TypeFilter func(tag reflect.Type) bool
 type MetaFilter func(meta ObjMeta) bool
@@ -21,7 +21,7 @@ type ObjMeta struct {
 	Children  []*ObjMeta   // Children fields (for nested structs)
 }
 
-type crawlSettings struct {
+type walkSettings struct {
 	MaxDepth       int
 	IncludePrivate bool
 	OnlySettable   bool
@@ -30,13 +30,13 @@ type crawlSettings struct {
 	MetaFilter     MetaFilter
 }
 
-func defaultSettings() *crawlSettings {
-	return &crawlSettings{
+func defaultSettings() *walkSettings {
+	return &walkSettings{
 		MaxDepth: 10,
 	}
 }
 
-func Crawl(obj interface{}, fn UserFunc, options ...Option) (*ObjMeta, error) {
+func Walk(obj interface{}, fn UserFunc, options ...Option) (*ObjMeta, error) {
 	settings := defaultSettings()
 	for _, option := range options {
 		option(settings)
@@ -51,10 +51,10 @@ func Crawl(obj interface{}, fn UserFunc, options ...Option) (*ObjMeta, error) {
 		rootPath = t.String()
 	}
 
-	return crawlRecursive(settings, obj, fn, 0, visited, rootPath, cache)
+	return walkRecursive(settings, obj, fn, 0, visited, rootPath, cache)
 }
 
-func crawlRecursive(settings *crawlSettings, obj interface{}, fn UserFunc, depth int, visited map[uintptr]bool, path string, cache map[string]*ObjMeta) (*ObjMeta, error) {
+func walkRecursive(settings *walkSettings, obj interface{}, fn UserFunc, depth int, visited map[uintptr]bool, path string, cache map[string]*ObjMeta) (*ObjMeta, error) {
 	if depth > settings.MaxDepth {
 		return nil, nil
 	}
@@ -70,10 +70,12 @@ func crawlRecursive(settings *crawlSettings, obj interface{}, fn UserFunc, depth
 		return nil, nil
 	}
 
-	if sf, ok := t.FieldByName(path); ok && settings.TagFilter != nil {
-		tag := sf.Tag
-		if !settings.TagFilter(tag) {
-			return nil, nil
+	if t.Kind() == reflect.Struct {
+		if sf, ok := t.FieldByName(path); ok && settings.TagFilter != nil {
+			tag := sf.Tag
+			if !settings.TagFilter(tag) {
+				return nil, nil
+			}
 		}
 	}
 
@@ -103,8 +105,13 @@ func crawlRecursive(settings *crawlSettings, obj interface{}, fn UserFunc, depth
 		IsPrivate: t.PkgPath() != "",
 	}
 
+	if settings.MetaFilter != nil && !settings.MetaFilter(*meta) {
+		return nil, nil
+	}
+
 	cache[path] = meta
 
+	// Call the user function, ending the recursion
 	err := fn(v, *meta)
 	if err != nil {
 		return nil, err
@@ -113,7 +120,7 @@ func crawlRecursive(settings *crawlSettings, obj interface{}, fn UserFunc, depth
 	// Recursive calls for nested types
 	switch v.Kind() {
 	case reflect.Ptr, reflect.Interface:
-		childMeta, err := crawlRecursive(settings, v.Elem().Interface(), fn, depth+1, visited, path, cache)
+		childMeta, err := walkRecursive(settings, v.Elem().Interface(), fn, depth+1, visited, path, cache)
 		if err != nil {
 			return nil, err
 		}
@@ -129,7 +136,7 @@ func crawlRecursive(settings *crawlSettings, obj interface{}, fn UserFunc, depth
 				continue
 			}
 			newPath := path + "." + fieldType.Name
-			childMeta, err := crawlRecursive(settings, field.Interface(), fn, depth+1, visited, newPath, cache)
+			childMeta, err := walkRecursive(settings, field.Interface(), fn, depth+1, visited, newPath, cache)
 			if err != nil {
 				return nil, err
 			}
@@ -142,7 +149,7 @@ func crawlRecursive(settings *crawlSettings, obj interface{}, fn UserFunc, depth
 		for i := 0; i < v.Len(); i++ {
 			elem := v.Index(i)
 			newPath := fmt.Sprintf("%s[%d]", path, i)
-			childMeta, err := crawlRecursive(settings, elem.Interface(), fn, depth+1, visited, newPath, cache)
+			childMeta, err := walkRecursive(settings, elem.Interface(), fn, depth+1, visited, newPath, cache)
 			if err != nil {
 				return nil, err
 			}
@@ -155,7 +162,7 @@ func crawlRecursive(settings *crawlSettings, obj interface{}, fn UserFunc, depth
 		for _, key := range v.MapKeys() {
 			value := v.MapIndex(key)
 			newPath := fmt.Sprintf("%s[%v]", path, key.Interface())
-			childMeta, err := crawlRecursive(settings, value.Interface(), fn, depth+1, visited, newPath, cache)
+			childMeta, err := walkRecursive(settings, value.Interface(), fn, depth+1, visited, newPath, cache)
 			if err != nil {
 				return nil, err
 			}
@@ -170,25 +177,53 @@ func crawlRecursive(settings *crawlSettings, obj interface{}, fn UserFunc, depth
 }
 
 func MaxDepth(depth int) Option {
-	return func(s *crawlSettings) {
+	return func(s *walkSettings) {
 		s.MaxDepth = depth
 	}
 }
 
 func PrivateFields() Option {
-	return func(s *crawlSettings) {
+	return func(s *walkSettings) {
 		s.IncludePrivate = true
 	}
 }
 
 func OnlySettable() Option {
-	return func(s *crawlSettings) {
+	return func(s *walkSettings) {
 		s.OnlySettable = true
 	}
 }
 
+func WithMetaFilter(fn MetaFilter) Option {
+	return func(s *walkSettings) {
+		s.MetaFilter = fn
+	}
+}
+
+func AllMetaFilters(filters ...MetaFilter) MetaFilter {
+	return func(meta ObjMeta) bool {
+		for _, filter := range filters {
+			if !filter(meta) {
+				return false
+			}
+		}
+		return true
+	}
+}
+
+func AnyMetaFilter(filters ...MetaFilter) MetaFilter {
+	return func(meta ObjMeta) bool {
+		for _, filter := range filters {
+			if filter(meta) {
+				return true
+			}
+		}
+		return false
+	}
+}
+
 func WithTagFilter(fn TagFilter) Option {
-	return func(s *crawlSettings) {
+	return func(s *walkSettings) {
 		s.TagFilter = fn
 	}
 }
@@ -252,7 +287,7 @@ func AnyTagFilter(filters ...TagFilter) TagFilter {
 }
 
 func WithTypeFilter(fn TypeFilter) Option {
-	return func(s *crawlSettings) {
+	return func(s *walkSettings) {
 		s.TypeFilter = fn
 	}
 }
