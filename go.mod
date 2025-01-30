@@ -1,3 +1,3 @@
 module github.com/ashtonian/gowalker
 
-go 1.13
+go 1.22

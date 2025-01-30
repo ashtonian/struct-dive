@@ -17,7 +17,7 @@ type BenchStruct struct {
 	H *int
 }
 
-var userFunc = func(v reflect.Value, meta ObjMeta) error {
+var userFunc = func(v reflect.Value, meta FieldMeta) error {
 	return nil
 }
 
@@ -26,7 +26,7 @@ func BenchmarkWalk(b *testing.B) {
 
 	b.Run("default", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
-			_, _ = Walk(benchStruct, userFunc)
+			_, _, _ = Walk(benchStruct, WithUserFunc(userFunc))
 		}
 	})
 }
